@@ -1,76 +1,58 @@
-const express = require('express');
-const multer = require('multer');
-const pdfParse = require('pdf-parse');
-const { GoogleGenAI } = require('@google/genai');
+import express from 'express';
+import multer from 'multer';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
-const port = process.env.PORT || 8080;
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25*1024*1024 } });
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const SAMPLE_DECK = `Company: Lumen Robotics\nStage: Seed, raising $4M on $20M post\nProblem: Warehouse picking is 60% of fulfillment cost and labor turnover is 130%/yr.\nSolution: Vision-language model on a $9k arm that learns SKUs in <5 min per item.\nTraction: 2 paid pilots (Gap, Chewy 3PL), $180k ARR, 14 LOIs.\nTeam: CEO ex-Boston Dynamics perception lead, CTO ex-Covariant, 4 engineers.\nMarket: $14B warehouse automation, growing 18% CAGR.\nAsk: $4M to deploy 30 arms across 6 customers, 18mo runway.\nGTM: Land via 3PLs, expand to brand-direct warehouses.\nCompetition: Covariant (enterprise-heavy), Symbotic (full system), Locus (AMR-only).`;
 
-app.use(express.static('public'));
+const SYSTEM_PROMPT = `You are a Series-A VC partner at a top-decile fund. Given a pitch deck or company summary, output a STRUCTURED investment scorecard. Be opinionated. Score each dimension 1-10. Identify at least 3 concrete red flags. Return ONLY valid JSON matching this schema:
+{
+  "company": string,
+  "one_liner": string,
+  "recommendation": "PASS" | "TRACK" | "DILIGENCE" | "TERM_SHEET",
+  "conviction": number,
+  "scorecard": {
+    "market": {"score": number, "reasoning": string},
+    "team": {"score": number, "reasoning": string},
+    "product": {"score": number, "reasoning": string},
+    "traction": {"score": number, "reasoning": string},
+    "moat": {"score": number, "reasoning": string},
+    "deal_terms": {"score": number, "reasoning": string}
+  },
+  "red_flags": [string],
+  "diligence_questions": [string],
+  "comparables": [{"name": string, "why": string}],
+  "memo": string
+}`;
 
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype === 'application/pdf') {
-      cb(null, true);
-    } else {
-      cb(new Error('Only PDF files are allowed'));
-    }
-  }
+async function analyze(text) {
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp', generationConfig: { responseMimeType: 'application/json' }, systemInstruction: SYSTEM_PROMPT });
+  const r = await model.generateContent(text);
+  return JSON.parse(r.response.text());
+}
+
+app.get('/api/health', (_,res)=>res.json({ok:true}));
+app.post('/api/analyze-sample', async (_,res)=>{
+  try { res.json(await analyze(SAMPLE_DECK)); } catch(e){ res.status(500).json({error:e.message}); }
 });
-
-app.post('/api/memo', upload.single('file'), async (req, res) => {
+app.post('/api/analyze', upload.single('pdf'), async (req,res)=>{
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
-
-    const data = await pdfParse(req.file.buffer);
-    const text = data.text;
-
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-pro' });
-    const prompt = `Analyze this pitch deck text and generate a VC investment memo with the following sections: [THESIS], [MARKET], [TEAM], [TRACTION], [RISKS]. Each section should be clearly labeled and contain relevant analysis based on the pitch deck content.`;
-    const result = await model.generateContent([prompt, text]);
-    const response = await result.response;
-    const memoText = response.text();
-
-    // Parse the response
-    const sections = {};
-    const sectionLabels = ['THESIS', 'MARKET', 'TEAM', 'TRACTION', 'RISKS'];
-    let currentSection = '';
-    const lines = memoText.split('\n');
-    for (const line of lines) {
-      const trimmed = line.trim();
-      for (const label of sectionLabels) {
-        if (trimmed.startsWith(`[${label}]`)) {
-          currentSection = label.toLowerCase();
-          sections[currentSection] = trimmed.replace(`[${label}]`, '').trim();
-          break;
-        }
-      }
-      if (currentSection && !trimmed.startsWith('[')) {
-        sections[currentSection] += '\n' + trimmed;
-      }
-    }
-
-    res.json(sections);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+    if(!req.file) return res.status(400).json({error:'no file'});
+    const model = genAI.getGenerativeModel({ model:'gemini-2.0-flash-exp', generationConfig:{responseMimeType:'application/json'}, systemInstruction: SYSTEM_PROMPT });
+    const r = await model.generateContent([{inlineData:{data:req.file.buffer.toString('base64'),mimeType:'application/pdf'}}, 'Analyze this pitch deck.']);
+    res.json(JSON.parse(r.response.text()));
+  } catch(e){ res.status(500).json({error:e.message}); }
 });
 
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    commit: process.env.COMMIT_SHA,
-    time: new Date().toISOString()
-  });
-});
-
-app.listen(port, '0.0.0.0', () => {
-  console.log(`Server running on port ${port}`);
-});
+app.use(express.static(path.join(__dirname,'public')));
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, ()=>console.log('DealLens v2 on',PORT));
