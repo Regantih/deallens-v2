@@ -35,7 +35,7 @@ const SYSTEM_PROMPT = `You are a Series-A VC partner at a top-decile fund. Given
 }`;
 
 async function analyze(text) {
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp', generationConfig: { responseMimeType: 'application/json' }, systemInstruction: SYSTEM_PROMPT });
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash', generationConfig: { responseMimeType: 'application/json' }, systemInstruction: SYSTEM_PROMPT });
   const r = await model.generateContent(text);
   return JSON.parse(r.response.text());
 }
@@ -47,7 +47,7 @@ app.post('/api/analyze-sample', async (_,res)=>{
 app.post('/api/analyze', upload.single('pdf'), async (req,res)=>{
   try {
     if(!req.file) return res.status(400).json({error:'no file'});
-    const model = genAI.getGenerativeModel({ model:'gemini-2.0-flash-exp', generationConfig:{responseMimeType:'application/json'}, systemInstruction: SYSTEM_PROMPT });
+    const model = genAI.getGenerativeModel({ model:'gemini-2.5-flash', generationConfig:{responseMimeType:'application/json'}, systemInstruction: SYSTEM_PROMPT });
     const r = await model.generateContent([{inlineData:{data:req.file.buffer.toString('base64'),mimeType:'application/pdf'}}, 'Analyze this pitch deck.']);
     res.json(JSON.parse(r.response.text()));
   } catch(e){ res.status(500).json({error:e.message}); }
